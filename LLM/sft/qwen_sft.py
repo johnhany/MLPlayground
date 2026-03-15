@@ -110,6 +110,11 @@ def parse_args():
         default=0.05,
         help="LoRA dropout",
     )
+    parser.add_argument(
+        "--local_only",
+        action="store_true",
+        help="Only load local model files, disable HuggingFace hub connection",
+    )
 
     return parser.parse_args()
 
@@ -184,10 +189,15 @@ def format_chat_prompt(example, tokenizer):
 # ==================== Model Loading ====================
 
 
-def load_model_and_tokenizer(model_id: str, max_seq_length: int):
+def load_model_and_tokenizer(model_id: str, max_seq_length: int, local_only: bool = False):
     """
     Load Qwen3-4B model with Unsloth optimization.
     Uses bfloat16 precision for efficiency on RTX 3090.
+
+    Args:
+        model_id: HuggingFace model ID or local path to model directory
+        max_seq_length: Maximum sequence length for training
+        local_only: If True, only load from local cache/path, disable HF hub
     """
     try:
         from unsloth import FastLanguageModel
@@ -196,14 +206,45 @@ def load_model_and_tokenizer(model_id: str, max_seq_length: int):
             "Unsloth not found. Install with: pip install unsloth"
         )
 
+    # If local_only is True, validate local path exists
+    if local_only:
+        model_path = Path(model_id)
+        if not model_path.exists():
+            raise FileNotFoundError(
+                f"Local model path not found: {model_id}\n"
+                f"Please ensure the model directory exists with config.json and model files."
+            )
+        print(f"Loading model from local path: {model_id}")
+
+        # Disable HuggingFace Hub connection
+        os.environ["HF_DATASETS_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    else:
+        print(f"Loading model: {model_id} (HF Hub enabled)")
+
     # Load model with 4-bit quantization option (if Unsloth supports it)
     # Default: load in bf16 for better precision
-    model, tokenizer = FastLanguageModel.from_pretrained(
-        model_name=model_id,
-        max_seq_length=max_seq_length,
-        dtype=torch.bfloat16,
-        load_in_4bit=False,  # Use bf16 instead of 4-bit for better precision
-    )
+    try:
+        model, tokenizer = FastLanguageModel.from_pretrained(
+            model_name=model_id,
+            max_seq_length=max_seq_length,
+            dtype=torch.bfloat16,
+            load_in_4bit=False,  # Use bf16 instead of 4-bit for better precision
+            local_files_only=local_only,  # Only use cached/local files
+        )
+    except Exception as e:
+        if local_only:
+            print(f"\n❌ Failed to load local model from: {model_id}")
+            print(f"Error: {str(e)}")
+            print("\n💡 Tips:")
+            print("  1. Check if the model directory exists")
+            print("  2. Verify it contains: config.json, model files (*.bin or *.safetensors)")
+            print("  3. Model structure should be like: /path/to/Qwen3-4B/")
+            print("     ├── config.json")
+            print("     ├── model.safetensors (or *.bin)")
+            print("     ├── tokenizer.json")
+            print("     └── tokenizer_config.json")
+        raise
 
     return model, tokenizer
 
@@ -353,6 +394,8 @@ def main():
     print(f"Epochs: {args.epochs}")
     print(f"Batch size: {args.batch_size} (grad accum: {args.grad_accum})")
     print(f"LoRA rank: {args.lora_r}, alpha: {args.lora_alpha}")
+    if args.local_only:
+        print("📁 Mode: LOCAL ONLY (HuggingFace Hub disabled)")
     print("=" * 60)
 
     # Create output directory
@@ -363,7 +406,9 @@ def main():
 
     # Load model and tokenizer
     print("\nLoading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(args.model, args.max_seq_length)
+    model, tokenizer = load_model_and_tokenizer(
+        args.model, args.max_seq_length, local_only=args.local_only
+    )
 
     # Apply LoRA
     print("Applying LoRA configuration...")

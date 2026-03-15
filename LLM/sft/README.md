@@ -54,11 +54,101 @@ python qwen_sft.py \
   --lr 2e-4
 ```
 
+## 本地模型加载（无网络连接）
+
+### 快速开始
+
+如果网络无法连接到 HuggingFace Hub，可以使用 `--local_only` 标志仅从本地加载模型：
+
+```bash
+python qwen_sft.py \
+  --model /path/to/local/Qwen3-4B \
+  --data sample_data.jsonl \
+  --output ./output \
+  --local_only
+```
+
+### 准备本地模型文件
+
+#### 方法 1：从 HuggingFace 缓存目录复制
+
+```bash
+# 模型通常缓存在：
+~/.cache/huggingface/hub/models--Qwen--Qwen3-4B/
+
+# 或使用环境变量指定缓存位置
+export HF_HOME=/custom/path
+python qwen_sft.py --model $HF_HOME/models--Qwen--Qwen3-4B --local_only
+```
+
+#### 方法 2：从磁盘下载模型
+
+```bash
+# 下载整个模型目录到本地
+mkdir -p ./models
+cd ./models
+
+# 使用 huggingface-cli（需要网络，但可以一次性完成）
+huggingface-cli download Qwen/Qwen3-4B --local-dir ./Qwen3-4B
+
+# 或者手动下载后复制
+# 确保本地目录包含以下文件：
+# ├── config.json
+# ├── model.safetensors (或多个 *.bin 文件)
+# ├── tokenizer.json
+# ├── tokenizer_config.json
+# └── generation_config.json
+```
+
+#### 方法 3：使用阿里镜像（中国网络）
+
+```bash
+# 设置阿里镜像源
+export HF_ENDPOINT=https://huggingface.co
+
+# 下载模型
+huggingface-cli download Qwen/Qwen3-4B --local-dir ./Qwen3-4B
+
+# 后续训练使用本地路径
+python qwen_sft.py \
+  --model ./Qwen3-4B \
+  --data sample_data.jsonl \
+  --local_only
+```
+
+### 验证本地模型文件完整性
+
+```bash
+ls -la ./Qwen3-4B/
+# 应该看到：
+# -rw-r--r--  config.json
+# -rw-r--r--  model.safetensors (或 *.bin)
+# -rw-r--r--  tokenizer.json
+# -rw-r--r--  tokenizer_config.json
+# -rw-r--r--  generation_config.json
+```
+
+### 排查本地加载错误
+
+如果 `--local_only` 仍报错：
+
+```bash
+# 1. 检查 HF_HOME 缓存
+export HF_HOME=~/.cache/huggingface
+find $HF_HOME -name "config.json" | grep Qwen
+
+# 2. 检查文件权限
+chmod -R 755 /path/to/Qwen3-4B/
+
+# 3. 尝试不用 --local_only（允许网络，使用缓存加速）
+python qwen_sft.py --model Qwen/Qwen3-4B --data sample_data.jsonl
+```
+
 ## 参数说明
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--model` | `Qwen/Qwen3-4B` | HuggingFace 模型 ID |
+| `--model` | `Qwen/Qwen3-4B` | HuggingFace 模型 ID 或本地路径 |
 | `--data` | - | 训练数据路径（JSONL/JSON）|
 | `--output` | `./qwen3_sft_output` | 输出目录（保存 adapter） |
 | `--epochs` | 3 | 训练轮数 |
@@ -70,6 +160,7 @@ python qwen_sft.py \
 | `--lora_r` | 16 | LoRA 秩（rank） |
 | `--lora_alpha` | 32 | LoRA alpha 系数 |
 | `--warmup_ratio` | 0.05 | 预热比例 |
+| `--local_only` | False | 仅加载本地模型，禁用 HuggingFace Hub |
 
 ## 显存占用（RTX 3090 = 24GB）
 
