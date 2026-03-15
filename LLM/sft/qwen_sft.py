@@ -4,6 +4,7 @@ Memory-efficient training with Unsloth optimization.
 """
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -130,6 +131,13 @@ def parse_args():
         "--local_only",
         action="store_true",
         help="Only load local model files, disable HuggingFace hub connection",
+    )
+    parser.add_argument(
+        "--cache_dir",
+        type=str,
+        default=None,
+        help="Directory to cache tokenized dataset. If set, tokenization result "
+             "is saved and reused on subsequent runs (skips ~30min re-tokenization).",
     )
 
     return parser.parse_args()
@@ -363,13 +371,16 @@ def train(
     save_steps: int = 500,
     save_total_limit: int = 3,
     logging_steps: int = 10,
+    cache_dir: Optional[str] = None,
+    data_path: Optional[str] = None,   # used as part of cache key
+    model_id: Optional[str] = None,    # used as part of cache key
 ):
     """
     Train model using standard Transformer Trainer.
     Loss is only computed on assistant tokens (input tokens masked with label=-100).
     """
 
-    # Prepare dataset - format text and tokenize
+    # Tokenize dataset (with optional disk cache to skip on re-runs)
     def format_and_tokenize(example):
         """Format into chat template and tokenize."""
         messages = [
@@ -380,7 +391,6 @@ def train(
             messages, tokenize=False, add_generation_prompt=False
         )
 
-        # Tokenize
         tokenized = tokenizer(
             text,
             truncation=True,
@@ -389,7 +399,6 @@ def train(
         )
 
         # Mask loss for input (user) tokens
-        # Find where assistant response starts
         user_text = tokenizer.apply_chat_template(
             [{"role": "user", "content": example["input"]}],
             tokenize=False,
@@ -398,19 +407,40 @@ def train(
         user_tokens = tokenizer(user_text, truncation=True, max_length=max_seq_length)
         user_token_count = len(user_tokens["input_ids"])
 
-        # Create labels: -100 for prompt tokens, real labels for response
         labels = tokenized["input_ids"].copy()
         labels[:user_token_count] = [-100] * user_token_count
 
         tokenized["labels"] = labels
         return tokenized
 
-    print("Tokenizing dataset...")
-    train_dataset = train_dataset.map(
-        format_and_tokenize,
-        remove_columns=["uuid", "input", "output", "domain"],
-        desc="Tokenizing",
-    )
+    # Build cache key from data path + model + max_seq_length
+    tokenized_dataset = None
+    cache_path = None
+    if cache_dir:
+        key_str = f"{data_path}|{model_id}|{max_seq_length}"
+        cache_key = hashlib.md5(key_str.encode()).hexdigest()[:12]
+        cache_path = os.path.join(cache_dir, f"tokenized_{cache_key}")
+
+        if os.path.exists(cache_path):
+            print(f"Loading tokenized dataset from cache: {cache_path}")
+            from datasets import load_from_disk
+            tokenized_dataset = load_from_disk(cache_path)
+            print(f"Loaded {len(tokenized_dataset)} samples from cache.")
+
+    if tokenized_dataset is None:
+        print("Tokenizing dataset...")
+        tokenized_dataset = train_dataset.map(
+            format_and_tokenize,
+            remove_columns=["uuid", "input", "output", "domain"],
+            desc="Tokenizing",
+        )
+        if cache_path:
+            os.makedirs(cache_dir, exist_ok=True)
+            print(f"Saving tokenized dataset to cache: {cache_path}")
+            tokenized_dataset.save_to_disk(cache_path)
+            print("Cache saved.")
+
+    train_dataset = tokenized_dataset
 
     # Training arguments
     training_args = TrainingArguments(
@@ -518,6 +548,9 @@ def main():
         save_steps=args.save_steps,
         save_total_limit=args.save_total_limit,
         logging_steps=args.logging_steps,
+        cache_dir=args.cache_dir,
+        data_path=args.data,
+        model_id=args.model,
     )
 
 
