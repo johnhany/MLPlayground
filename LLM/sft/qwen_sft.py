@@ -13,7 +13,6 @@ import warnings
 import torch
 from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
 from transformers.trainer_callback import TrainerCallback
-from peft import LoraConfig, get_peft_model
 from datasets import Dataset, load_dataset
 
 warnings.filterwarnings("ignore")
@@ -251,13 +250,17 @@ def load_model_and_tokenizer(model_id: str, max_seq_length: int, local_only: boo
 # ==================== LoRA Configuration ====================
 
 
-def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
+def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float, seed: int = 42):
     """
-    Apply LoRA to model using PEFT (supports 4-bit quantized models).
-    Target modules verified for Qwen3-4B: q_proj, k_proj, v_proj, o_proj,
-    gate_proj, up_proj, down_proj
+    Apply LoRA using Unsloth's native FastLanguageModel.get_peft_model().
+    This is required when the base model was loaded with Unsloth, as Unsloth
+    patches the training loop and expects its own LoRA setup.
+    Target modules verified for Qwen3-4B.
     """
-    lora_config = LoraConfig(
+    from unsloth import FastLanguageModel
+
+    model = FastLanguageModel.get_peft_model(
+        model,
         r=lora_r,
         lora_alpha=lora_alpha,
         target_modules=[
@@ -271,35 +274,13 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
         ],
         lora_dropout=lora_dropout,
         bias="none",
-        task_type="CAUSAL_LM",
+        use_gradient_checkpointing="unsloth",  # Unsloth's optimized gradient checkpointing
+        random_state=seed,
+        use_rslora=False,
+        loftq_config=None,
     )
 
-    # Apply LoRA adapters
-    model = get_peft_model(model, lora_config)
-
-    # For 4-bit quantized models, explicitly ensure only LoRA params have gradients
-    for name, param in model.named_parameters():
-        param.requires_grad = "lora" in name.lower()
-
-    print("\n" + "="*60)
-    print("LoRA Configuration Applied:")
-    print("="*60)
     model.print_trainable_parameters()
-
-    # Debug: verify at least some params are trainable
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"Trainable: {trainable_params:,} / Total: {total_params:,}")
-    print(f"Trainable %: {100 * trainable_params / total_params:.4f}%")
-
-    if trainable_params == 0:
-        print("\n⚠️  WARNING: No trainable parameters! LoRA may not have been applied correctly.")
-        print("Checking LoRA layers:")
-        for name, module in model.named_modules():
-            if "lora" in name.lower():
-                print(f"  Found: {name}")
-
-    print("="*60 + "\n")
 
     return model
 
@@ -393,7 +374,8 @@ def train(
         save_strategy="epoch",
         seed=seed,
         bf16=True,  # Use bfloat16
-        gradient_checkpointing=True,  # Save memory with gradient checkpointing
+        # gradient_checkpointing handled by Unsloth's get_peft_model(use_gradient_checkpointing="unsloth")
+        gradient_checkpointing=False,
         max_grad_norm=1.0,
     )
 
@@ -455,20 +437,14 @@ def main():
         args.model, args.max_seq_length, local_only=args.local_only
     )
 
-    # Prepare model for training with Unsloth
-    try:
-        from unsloth import FastLanguageModel
-        model = FastLanguageModel.for_training(model)
-    except Exception as e:
-        print(f"Warning: Could not prepare model for training: {e}")
-
-    # Apply LoRA
+    # Apply LoRA using Unsloth's native interface
     print("Applying LoRA configuration...")
     model = apply_lora(
         model,
         lora_r=args.lora_r,
         lora_alpha=args.lora_alpha,
         lora_dropout=args.lora_dropout,
+        seed=args.seed,
     )
 
     # Set pad token
