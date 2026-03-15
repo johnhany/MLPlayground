@@ -109,6 +109,24 @@ def parse_args():
         help="LoRA dropout",
     )
     parser.add_argument(
+        "--save_steps",
+        type=int,
+        default=500,
+        help="Save checkpoint every N steps (use with large datasets)",
+    )
+    parser.add_argument(
+        "--save_total_limit",
+        type=int,
+        default=3,
+        help="Maximum number of checkpoints to keep",
+    )
+    parser.add_argument(
+        "--logging_steps",
+        type=int,
+        default=10,
+        help="Log metrics every N steps",
+    )
+    parser.add_argument(
         "--local_only",
         action="store_true",
         help="Only load local model files, disable HuggingFace hub connection",
@@ -311,6 +329,9 @@ def train(
     warmup_ratio: float = 0.05,
     max_seq_length: int = 2048,
     seed: int = 42,
+    save_steps: int = 500,
+    save_total_limit: int = 3,
+    logging_steps: int = 10,
 ):
     """
     Train model using standard Transformer Trainer.
@@ -365,18 +386,20 @@ def train(
         output_dir=output_dir,
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=grad_accum,
-        optim="paged_adamw_8bit",  # Memory-efficient optimizer
+        optim="paged_adamw_8bit",
         num_train_epochs=num_epochs,
         learning_rate=learning_rate,
         warmup_ratio=warmup_ratio,
         lr_scheduler_type="cosine",
-        logging_steps=10,
-        save_strategy="epoch",
+        logging_steps=logging_steps,
+        save_strategy="steps",       # Save by steps, not epoch (safer for large datasets)
+        save_steps=save_steps,
+        save_total_limit=save_total_limit,
         seed=seed,
-        bf16=True,  # Use bfloat16
-        # gradient_checkpointing handled by Unsloth's get_peft_model(use_gradient_checkpointing="unsloth")
-        gradient_checkpointing=False,
+        bf16=True,
+        gradient_checkpointing=False,  # Handled by Unsloth's use_gradient_checkpointing="unsloth"
         max_grad_norm=1.0,
+        dataloader_num_workers=4,      # Speed up data loading
     )
 
     # Create trainer with data collator
@@ -464,6 +487,9 @@ def main():
         warmup_ratio=args.warmup_ratio,
         max_seq_length=args.max_seq_length,
         seed=args.seed,
+        save_steps=args.save_steps,
+        save_total_limit=args.save_total_limit,
+        logging_steps=args.logging_steps,
     )
 
 
