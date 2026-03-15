@@ -11,10 +11,9 @@ from typing import Optional
 import warnings
 
 import torch
-from transformers import TrainingArguments, TextIteratorStreamer
+from transformers import TrainingArguments, Trainer
 from transformers.trainer_callback import TrainerCallback
 from peft import LoraConfig, get_peft_model
-from trl import SFTTrainer
 from datasets import Dataset, load_dataset
 
 warnings.filterwarnings("ignore")
@@ -308,30 +307,51 @@ def train(
     seed: int = 42,
 ):
     """
-    Train model using TRL SFTTrainer.
+    Train model using standard Transformer Trainer.
     Loss is only computed on assistant tokens (input tokens masked with label=-100).
     """
 
-    # Prepare dataset
-    def format_fn(batch):
-        """Format batch for training."""
-        texts = []
-        for i in range(len(batch["input"])):
-            messages = [
-                {"role": "user", "content": batch["input"][i]},
-                {"role": "assistant", "content": batch["output"][i]},
-            ]
-            text = tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=False
-            )
-            texts.append(text)
-        return {"text": texts}
+    # Prepare dataset - format text and tokenize
+    def format_and_tokenize(example):
+        """Format into chat template and tokenize."""
+        messages = [
+            {"role": "user", "content": example["input"]},
+            {"role": "assistant", "content": example["output"]},
+        ]
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=False
+        )
 
+        # Tokenize
+        tokenized = tokenizer(
+            text,
+            truncation=True,
+            max_length=max_seq_length,
+            padding=False,
+        )
+
+        # Mask loss for input (user) tokens
+        # Find where assistant response starts
+        user_text = tokenizer.apply_chat_template(
+            [{"role": "user", "content": example["input"]}],
+            tokenize=False,
+            add_generation_prompt=False,
+        )
+        user_tokens = tokenizer(user_text, truncation=True, max_length=max_seq_length)
+        user_token_count = len(user_tokens["input_ids"])
+
+        # Create labels: -100 for prompt tokens, real labels for response
+        labels = tokenized["input_ids"].copy()
+        labels[:user_token_count] = [-100] * user_token_count
+
+        tokenized["labels"] = labels
+        return tokenized
+
+    print("Tokenizing dataset...")
     train_dataset = train_dataset.map(
-        format_fn,
-        batched=True,
-        batch_size=len(train_dataset),
+        format_and_tokenize,
         remove_columns=["uuid", "input", "output", "domain"],
+        desc="Tokenizing",
     )
 
     # Training arguments
@@ -350,18 +370,13 @@ def train(
         bf16=True,  # Use bfloat16
         gradient_checkpointing=True,  # Save memory with gradient checkpointing
         max_grad_norm=1.0,
-        remove_unused_columns=True,
-        report_to=["tensorboard"],
     )
 
     # Create trainer
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
-        dataset_text_field="text",
-        max_seq_length=max_seq_length,
-        packing=False,  # Don't pack sequences (easier debugging)
         callbacks=[LoggingCallback()],
     )
 
