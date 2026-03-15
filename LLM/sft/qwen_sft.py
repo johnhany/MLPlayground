@@ -11,7 +11,7 @@ from typing import Optional
 import warnings
 
 import torch
-from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
+from transformers import TrainingArguments, Trainer
 from transformers.trainer_callback import TrainerCallback
 from datasets import Dataset, load_dataset
 
@@ -306,6 +306,37 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float, seed: i
 # ==================== Training ====================
 
 
+class SFTDataCollator:
+    """
+    Custom data collator for SFT.
+    - Pads input_ids with pad_token_id
+    - Pads labels with -100 (ignored in loss computation)
+    - Pads attention_mask with 0
+    """
+
+    def __init__(self, tokenizer):
+        self.pad_token_id = tokenizer.pad_token_id or tokenizer.eos_token_id
+
+    def __call__(self, features):
+        input_ids = [f["input_ids"] for f in features]
+        labels = [f["labels"] for f in features]
+
+        max_len = max(len(ids) for ids in input_ids)
+
+        padded_input_ids, padded_labels, padded_masks = [], [], []
+        for ids, lbl in zip(input_ids, labels):
+            pad_len = max_len - len(ids)
+            padded_input_ids.append(ids + [self.pad_token_id] * pad_len)
+            padded_labels.append(lbl + [-100] * pad_len)
+            padded_masks.append([1] * len(ids) + [0] * pad_len)
+
+        return {
+            "input_ids": torch.tensor(padded_input_ids, dtype=torch.long),
+            "labels": torch.tensor(padded_labels, dtype=torch.long),
+            "attention_mask": torch.tensor(padded_masks, dtype=torch.long),
+        }
+
+
 class LoggingCallback(TrainerCallback):
     """Custom callback for detailed logging."""
 
@@ -399,14 +430,11 @@ def train(
         bf16=True,
         gradient_checkpointing=False,  # Handled by Unsloth's use_gradient_checkpointing="unsloth"
         max_grad_norm=1.0,
-        dataloader_num_workers=4,      # Speed up data loading
+        dataloader_num_workers=0,      # 0 = main process only, avoids worker/Unsloth conflicts
     )
 
-    # Create trainer with data collator
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False,  # Not using masked language modeling, this is causal LM
-    )
+    # Create trainer with custom collator that pads labels with -100
+    data_collator = SFTDataCollator(tokenizer)
 
     trainer = Trainer(
         model=model,
