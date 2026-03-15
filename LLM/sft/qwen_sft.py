@@ -11,7 +11,7 @@ from typing import Optional
 import warnings
 
 import torch
-from transformers import TrainingArguments, Trainer
+from transformers import TrainingArguments, Trainer, DataCollatorForLanguageModeling
 from transformers.trainer_callback import TrainerCallback
 from peft import LoraConfig, get_peft_model
 from datasets import Dataset, load_dataset
@@ -273,7 +273,13 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
         task_type="CAUSAL_LM",
     )
 
+    # Apply LoRA adapters
     model = get_peft_model(model, lora_config)
+
+    # Freeze all base model parameters, keep only LoRA trainable
+    for param in model.base_model.parameters():
+        param.requires_grad = False
+
     model.print_trainable_parameters()
 
     return model
@@ -372,11 +378,17 @@ def train(
         max_grad_norm=1.0,
     )
 
-    # Create trainer
+    # Create trainer with data collator
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False,  # Not using masked language modeling, this is causal LM
+    )
+
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset,
+        data_collator=data_collator,
         callbacks=[LoggingCallback()],
     )
 
