@@ -255,6 +255,7 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
     """
     Apply LoRA to model using PEFT.
     Target modules: all attention + MLP layers.
+    PEFT automatically handles requires_grad settings.
     """
     lora_config = LoraConfig(
         r=lora_r,
@@ -273,13 +274,10 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
         task_type="CAUSAL_LM",
     )
 
-    # Apply LoRA adapters
+    # Apply LoRA - PEFT will automatically set requires_grad correctly
     model = get_peft_model(model, lora_config)
 
-    # Freeze all base model parameters, keep only LoRA trainable
-    for param in model.base_model.parameters():
-        param.requires_grad = False
-
+    # Print trainable parameters
     model.print_trainable_parameters()
 
     return model
