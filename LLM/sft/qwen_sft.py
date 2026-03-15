@@ -253,9 +253,9 @@ def load_model_and_tokenizer(model_id: str, max_seq_length: int, local_only: boo
 
 def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
     """
-    Apply LoRA to model using PEFT.
-    Target modules: all attention + MLP layers.
-    PEFT automatically handles requires_grad settings.
+    Apply LoRA to model using PEFT (supports 4-bit quantized models).
+    Target modules verified for Qwen3-4B: q_proj, k_proj, v_proj, o_proj,
+    gate_proj, up_proj, down_proj
     """
     lora_config = LoraConfig(
         r=lora_r,
@@ -274,11 +274,32 @@ def apply_lora(model, lora_r: int, lora_alpha: int, lora_dropout: float):
         task_type="CAUSAL_LM",
     )
 
-    # Apply LoRA - PEFT will automatically set requires_grad correctly
+    # Apply LoRA adapters
     model = get_peft_model(model, lora_config)
 
-    # Print trainable parameters
+    # For 4-bit quantized models, explicitly ensure only LoRA params have gradients
+    for name, param in model.named_parameters():
+        param.requires_grad = "lora" in name.lower()
+
+    print("\n" + "="*60)
+    print("LoRA Configuration Applied:")
+    print("="*60)
     model.print_trainable_parameters()
+
+    # Debug: verify at least some params are trainable
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"Trainable: {trainable_params:,} / Total: {total_params:,}")
+    print(f"Trainable %: {100 * trainable_params / total_params:.4f}%")
+
+    if trainable_params == 0:
+        print("\n⚠️  WARNING: No trainable parameters! LoRA may not have been applied correctly.")
+        print("Checking LoRA layers:")
+        for name, module in model.named_modules():
+            if "lora" in name.lower():
+                print(f"  Found: {name}")
+
+    print("="*60 + "\n")
 
     return model
 
