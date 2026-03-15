@@ -1,0 +1,5 @@
+{"uuid": "001", "input": "1+1等于多少？", "output": "1+1等于2", "domain": "math", "meta": {"difficulty": "easy"}}
+{"uuid": "002", "input": "什么是勾股定理？", "output": "勾股定理是直角三角形中，两条直角边的平方和等于斜边的平方的定理，记为 a² + b² = c²", "domain": "math", "meta": {"difficulty": "medium"}}
+{"uuid": "003", "input": "2+2=?", "output": "2+2=4", "domain": "math", "meta": {"difficulty": "easy"}}
+{"uuid": "004", "input": "3×4的结果是多少？", "output": "3×4=12", "domain": "math", "meta": {"difficulty": "easy"}}
+{"uuid": "005", "input": "求解方程：x+5=10", "output": "x+5=10，移项得 x=10-5=5，所以 x=5", "domain": "math", "meta": {"difficulty": "easy"}}
