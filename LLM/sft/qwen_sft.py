@@ -357,7 +357,6 @@ def train(
     # Create trainer
     trainer = SFTTrainer(
         model=model,
-        tokenizer=tokenizer,
         args=training_args,
         train_dataset=train_dataset,
         dataset_text_field="text",
@@ -409,6 +408,13 @@ def main():
     model, tokenizer = load_model_and_tokenizer(
         args.model, args.max_seq_length, local_only=args.local_only
     )
+
+    # Prepare model for training with Unsloth
+    try:
+        from unsloth import FastLanguageModel
+        model = FastLanguageModel.for_training(model)
+    except Exception as e:
+        print(f"Warning: Could not prepare model for training: {e}")
 
     # Apply LoRA
     print("Applying LoRA configuration...")
