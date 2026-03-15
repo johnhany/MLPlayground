@@ -106,8 +106,8 @@ def parse_args():
     parser.add_argument(
         "--lora_dropout",
         type=float,
-        default=0.05,
-        help="LoRA dropout",
+        default=0.0,
+        help="LoRA dropout. Set to 0 (default) to enable Unsloth fast kernel patching on QKV/O/MLP layers",
     )
     parser.add_argument(
         "--save_steps",
