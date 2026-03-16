@@ -75,6 +75,45 @@ python qwen_sft.py \
 
 你的 Qwen3-4B 正在使用 **QLoRA**，这是最显存高效的选项。
 
+## 监控训练指标
+
+### 实时查看指标（TensorBoard）
+
+训练过程中，所有指标自动保存到 TensorBoard 日志。启动 TensorBoard 查看：
+
+```bash
+# 方法 1：Python 脚本（推荐）
+python launch_tensorboard.py ./qwen3_sft_output
+
+# 方法 2：直接命令
+tensorboard --logdir=./qwen3_sft_output/logs --port=6006
+```
+
+然后在浏览器打开：**http://localhost:6006**
+
+### 可监控的指标
+
+| 指标 | 说明 | 用途 |
+|------|------|------|
+| **loss** | 训练损失 | 监控模型学习进度，应该逐步下降 |
+| **learning_rate** | 学习率变化 | 验证学习率调度器（cosine）工作正常 |
+| **grad_norm** | 梯度范数 | 检查梯度爆炸/消失（应 < 1.0） |
+| **epoch** | 当前轮数 | 追踪训练进度 |
+| **steps** | 全局步数 | 总训练步数 |
+
+### 指标解读
+
+**正常训练迹象**：
+- ✅ Loss 平稳下降（不一定单调，但总体趋势向下）
+- ✅ Learning rate 按 cosine 曲线衰减
+- ✅ Grad norm 稳定在 0.1~1.0 范围
+- ✅ 每步耗时 ~7-8 秒（RTX 3090 + QLoRA）
+
+**异常迹象**：
+- ❌ Loss 不下降或上升 → 学习率过高，尝试 `--lr 5e-5`
+- ❌ Grad norm 爆炸（> 10） → 梯度裁剪失效，检查数据质量
+- ❌ Loss 震荡剧烈 → 批量大小过小，增加 `--grad_accum`
+
 ## 本地模型加载（无网络连接）
 
 ### 快速开始

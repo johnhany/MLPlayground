@@ -13,7 +13,6 @@ import warnings
 
 import torch
 from transformers import TrainingArguments, Trainer
-from transformers.trainer_callback import TrainerCallback
 from datasets import Dataset, load_dataset
 
 warnings.filterwarnings("ignore")
@@ -345,14 +344,7 @@ class SFTDataCollator:
         }
 
 
-class LoggingCallback(TrainerCallback):
-    """Custom callback for detailed logging."""
-
-    def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % 10 == 0 and state.log_history:
-            loss = state.log_history[-1].get('loss', 'N/A')
-            loss_str = f"{loss:.4f}" if isinstance(loss, (int, float)) else str(loss)
-            print(f"Step {state.global_step}: loss={loss_str}")
+# ==================== Training ====================
 
 
 def train(
@@ -452,14 +444,16 @@ def train(
         warmup_ratio=warmup_ratio,
         lr_scheduler_type="cosine",
         logging_steps=logging_steps,
-        save_strategy="steps",       # Save by steps, not epoch (safer for large datasets)
+        save_strategy="steps",
         save_steps=save_steps,
         save_total_limit=save_total_limit,
         seed=seed,
         bf16=True,
-        gradient_checkpointing=False,  # Handled by Unsloth's use_gradient_checkpointing="unsloth"
+        gradient_checkpointing=False,
         max_grad_norm=1.0,
-        dataloader_num_workers=0,      # 0 = main process only, avoids worker/Unsloth conflicts
+        dataloader_num_workers=0,
+        report_to=["tensorboard"],  # Enable TensorBoard logging
+        logging_dir=os.path.join(output_dir, "logs"),  # TensorBoard logs directory
     )
 
     # Create trainer with custom collator that pads labels with -100
@@ -470,7 +464,6 @@ def train(
         args=training_args,
         train_dataset=train_dataset,
         data_collator=data_collator,
-        callbacks=[LoggingCallback()],
     )
 
     # Train
