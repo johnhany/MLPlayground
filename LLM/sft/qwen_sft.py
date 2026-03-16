@@ -349,11 +349,10 @@ class LoggingCallback(TrainerCallback):
     """Custom callback for detailed logging."""
 
     def on_step_end(self, args, state, control, **kwargs):
-        if state.global_step % 10 == 0:
-            print(
-                f"Step {state.global_step}: "
-                f"loss={state.log_history[-1].get('loss', 'N/A'):.4f}"
-            )
+        if state.global_step % 10 == 0 and state.log_history:
+            loss = state.log_history[-1].get('loss', 'N/A')
+            loss_str = f"{loss:.4f}" if isinstance(loss, (int, float)) else str(loss)
+            print(f"Step {state.global_step}: loss={loss_str}")
 
 
 def train(
