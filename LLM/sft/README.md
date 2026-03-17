@@ -75,6 +75,74 @@ python qwen_sft.py \
 
 你的 Qwen3-4B 正在使用 **QLoRA**，这是最显存高效的选项。
 
+## 评估微调效果
+
+### 准备测试数据
+
+创建 `test_data.jsonl`（格式与训练数据相同）：
+
+```json
+{"uuid": "test_001", "input": "1+1=?", "output": "1+1=2", "domain": "math"}
+{"uuid": "test_002", "input": "2+2=?", "output": "2+2=4", "domain": "math"}
+```
+
+或从训练数据中随机抽取：
+```bash
+head -100 train_data.jsonl > test_data.jsonl
+```
+
+### 运行评估
+
+```bash
+# 安装评估依赖
+pip install sacrebleu rouge-score
+
+# 运行评估脚本
+python evaluate_sft.py \
+  --base_model /home/john/models/qwen3-4b \
+  --adapter_path ./qwen3_sft_output/final_adapter \
+  --test_data test_data.jsonl \
+  --output_dir ./evaluation_results \
+  --max_samples 50 \
+  --local_only
+```
+
+### 查看评估结果
+
+```bash
+# 查看 HTML 对比报告（浏览器打开）
+open evaluation_results/comparison.html
+
+# 查看 Markdown 报告
+cat evaluation_results/comparison.md
+
+# 查看自动指标
+cat evaluation_results/metrics.json
+
+# 查看详细结果
+cat evaluation_results/detailed_results.json
+```
+
+### 输出文件说明
+
+| 文件 | 说明 |
+|------|------|
+| `comparison.html` | 并排对比两个模型的输出（HTML 表格） |
+| `comparison.md` | 并排对比两个模型的输出（Markdown） |
+| `metrics.json` | BLEU、ROUGE-L 等自动指标 |
+| `detailed_results.json` | 每条样本的详细结果 |
+| `summary.txt` | 评估总结 |
+
+### 指标解读
+
+| 指标 | 说明 | 预期改进 |
+|------|------|---------|
+| **BLEU-4** | 机器翻译评估指标，0-100 | +20~40 |
+| **ROUGE-L** | 文本摘要评估指标，0-1 | +0.1~0.3 |
+| **Perplexity** | 困惑度，越低越好 | -20~50% |
+
+**正常情况**：微调后模型的所有指标都应显著优于 base model。
+
 ## 监控训练指标
 
 ### 实时查看指标（TensorBoard）
