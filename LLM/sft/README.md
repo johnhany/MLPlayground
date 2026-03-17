@@ -77,6 +77,24 @@ python qwen_sft.py \
 
 ## 评估微调效果
 
+### 支持的数据格式
+
+脚本支持两种数据格式：
+
+#### 格式 1：SFT 训练数据
+
+```json
+{"uuid": "test_001", "input": "1+1=?", "output": "1+1=2", "domain": "math"}
+```
+
+#### 格式 2：AIME2025 数学竞赛数据
+
+```json
+{"question": "数学问题", "answer": "答案"}
+```
+
+脚本会自动检测数据格式。
+
 ### 准备测试数据
 
 创建 `test_data.jsonl`（格式与训练数据相同）：
@@ -84,6 +102,13 @@ python qwen_sft.py \
 ```json
 {"uuid": "test_001", "input": "1+1=?", "output": "1+1=2", "domain": "math"}
 {"uuid": "test_002", "input": "2+2=?", "output": "2+2=4", "domain": "math"}
+```
+
+或使用 AIME 格式：
+
+```json
+{"question": "问题1", "answer": "答案1"}
+{"question": "问题2", "answer": "答案2"}
 ```
 
 或从训练数据中随机抽取：
@@ -97,7 +122,7 @@ head -100 train_data.jsonl > test_data.jsonl
 # 安装评估依赖
 pip install sacrebleu rouge-score
 
-# 运行评估脚本
+# 运行评估脚本（自动检测数据格式）
 python evaluate_sft.py \
   --base_model /home/john/models/qwen3-4b \
   --adapter_path ./qwen3_sft_output/final_adapter \
@@ -142,6 +167,11 @@ cat evaluation_results/detailed_results.json
 | **Perplexity** | 困惑度，越低越好 | -20~50% |
 
 **正常情况**：微调后模型的所有指标都应显著优于 base model。
+
+### 示例数据文件
+
+- `test_data.jsonl` - SFT 格式示例（5 条数学题）
+- `aime_test_data.jsonl` - AIME2025 格式示例（5 条竞赛题）
 
 ## 监控训练指标
 

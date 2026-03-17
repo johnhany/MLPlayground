@@ -98,8 +98,15 @@ def load_models(base_model_path: str, adapter_path: str, local_only: bool = Fals
     return base_model, finetuned_model, tokenizer
 
 
-def load_test_data(data_path: str, max_samples: Optional[int] = None) -> List[Dict]:
-    """Load test data from JSONL."""
+def load_test_data(data_path: str, max_samples: Optional[int] = None) -> tuple:
+    """Load test data from JSONL. Supports two formats:
+
+    Format 1 (SFT training data):
+    {"uuid": "...", "input": "...", "output": "...", "domain": "..."}
+
+    Format 2 (AIME2025):
+    {"question": "...", "answer": "..."}
+    """
     import json
 
     data = []
@@ -110,8 +117,18 @@ def load_test_data(data_path: str, max_samples: Optional[int] = None) -> List[Di
     if max_samples:
         data = data[:max_samples]
 
-    print(f"Loaded {len(data)} test samples")
-    return data
+    # Detect format
+    if data and "question" in data[0]:
+        data_format = "aime"
+        print(f"Detected AIME2025 format")
+    elif data and "input" in data[0]:
+        data_format = "sft"
+        print(f"Detected SFT training format")
+    else:
+        raise ValueError("Unknown data format. Expected 'question'/'answer' or 'input'/'output'")
+
+    print(f"Loaded {len(data)} test samples ({data_format} format)")
+    return data, data_format
 
 
 def generate_response(
@@ -207,8 +224,9 @@ def generate_html_report(
     base_outputs: List[str],
     finetuned_outputs: List[str],
     output_path: str,
+    data_format: str = "sft",
 ):
-    """Generate HTML comparison report."""
+    """Generate HTML comparison report. Supports SFT and AIME formats."""
     html = """
     <html>
     <head>
@@ -224,26 +242,36 @@ def generate_html_report(
             .finetuned { background-color: #e6f3ff; }
             h1 { color: #333; }
             .sample-num { font-weight: bold; color: #666; }
+            .question { font-style: italic; color: #555; }
+            .answer { font-weight: bold; }
         </style>
     </head>
     <body>
         <h1>SFT Model Evaluation Report</h1>
         <p>Comparing Base Model vs Fine-tuned Model</p>
+        <p>Format: {}</p>
         <table>
             <tr>
                 <th>#</th>
-                <th>Input</th>
-                <th>Reference Output</th>
-                <th class="base">Base Model Output</th>
-                <th class="finetuned">Fine-tuned Model Output</th>
+                <th>{}</th>
+                <th>Reference</th>
+                <th class="base">Base Model</th>
+                <th class="finetuned">Fine-tuned Model</th>
             </tr>
-    """
+    """.format(
+        data_format.upper(),
+        "Question" if data_format == "aime" else "Input",
+    )
 
     for i, (sample, base_out, ft_out) in enumerate(
         zip(test_data, base_outputs, finetuned_outputs), 1
     ):
-        input_text = sample.get("input", "")
-        reference = sample.get("output", "")
+        if data_format == "aime":
+            input_text = sample.get("question", "")
+            reference = sample.get("answer", "")
+        else:
+            input_text = sample.get("input", "")
+            reference = sample.get("output", "")
 
         html += f"""
             <tr>
@@ -272,20 +300,29 @@ def generate_markdown_report(
     base_outputs: List[str],
     finetuned_outputs: List[str],
     output_path: str,
+    data_format: str = "sft",
 ):
-    """Generate Markdown comparison report."""
+    """Generate Markdown comparison report. Supports SFT and AIME formats."""
     md = "# SFT Model Evaluation Report\n\n"
     md += "Comparing Base Model vs Fine-tuned Model\n\n"
+    md += f"**Format**: {data_format.upper()}\n\n"
 
     for i, (sample, base_out, ft_out) in enumerate(
         zip(test_data, base_outputs, finetuned_outputs), 1
     ):
-        input_text = sample.get("input", "")
-        reference = sample.get("output", "")
+        if data_format == "aime":
+            input_text = sample.get("question", "")
+            reference = sample.get("answer", "")
+            md += f"## Sample {i}\n\n"
+            md += f"**Question**: {input_text}\n\n"
+            md += f"**Reference Answer**: {reference}\n\n"
+        else:
+            input_text = sample.get("input", "")
+            reference = sample.get("output", "")
+            md += f"## Sample {i}\n\n"
+            md += f"**Input**: {input_text}\n\n"
+            md += f"**Reference Output**: {reference}\n\n"
 
-        md += f"## Sample {i}\n\n"
-        md += f"**Input**: {input_text}\n\n"
-        md += f"**Reference Output**: {reference}\n\n"
         md += f"**Base Model Output**:\n> {base_out}\n\n"
         md += f"**Fine-tuned Model Output**:\n> {ft_out}\n\n"
         md += "---\n\n"
@@ -314,7 +351,7 @@ def main():
     print("\n" + "=" * 60)
     print("Loading Test Data")
     print("=" * 60)
-    test_data = load_test_data(args.test_data, args.max_samples)
+    test_data, data_format = load_test_data(args.test_data, args.max_samples)
 
     # Generate responses
     print("\n" + "=" * 60)
@@ -326,8 +363,14 @@ def main():
     references = []
 
     for sample in tqdm(test_data, desc="Evaluating"):
-        input_text = sample.get("input", "")
-        reference = sample.get("output", "")
+        if data_format == "aime":
+            # AIME2025 format: question -> answer
+            input_text = sample.get("question", "")
+            reference = sample.get("answer", "")
+        else:
+            # SFT format: input -> output
+            input_text = sample.get("input", "")
+            reference = sample.get("output", "")
 
         base_out = generate_response(
             base_model,
@@ -364,8 +407,8 @@ def main():
     metrics_path = os.path.join(args.output_dir, "metrics.json")
     detailed_path = os.path.join(args.output_dir, "detailed_results.json")
 
-    generate_html_report(test_data, base_outputs, finetuned_outputs, html_path)
-    generate_markdown_report(test_data, base_outputs, finetuned_outputs, md_path)
+    generate_html_report(test_data, base_outputs, finetuned_outputs, html_path, data_format)
+    generate_markdown_report(test_data, base_outputs, finetuned_outputs, md_path, data_format)
 
     # Save metrics
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -377,15 +420,23 @@ def main():
     for i, (sample, base_out, ft_out, ref) in enumerate(
         zip(test_data, base_outputs, finetuned_outputs, references), 1
     ):
-        detailed_results.append(
-            {
+        if data_format == "aime":
+            result = {
+                "sample_id": i,
+                "question": sample.get("question", ""),
+                "reference_answer": ref,
+                "base_model_answer": base_out,
+                "finetuned_model_answer": ft_out,
+            }
+        else:
+            result = {
                 "sample_id": i,
                 "input": sample.get("input", ""),
                 "reference_output": ref,
                 "base_model_output": base_out,
                 "finetuned_model_output": ft_out,
             }
-        )
+        detailed_results.append(result)
 
     with open(detailed_path, "w", encoding="utf-8") as f:
         json.dump(detailed_results, f, indent=2, ensure_ascii=False)

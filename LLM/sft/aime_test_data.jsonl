@@ -1,0 +1,5 @@
+{"question": "The parabola with equation $y=x^{2}-4$ is rotated $60^{\\circ}$ counterclockwise around the origin. The unique point in the fourth quadrant where the original parabola and its image intersect has $y$-coordinate $\\frac{a-\\sqrt{b}}{c}$, where $a$, $b$, and $c$ are positive integers, and $a$ and $c$ are relatively prime. Find $a+b+c$.", "answer": "62"}
+{"question": "Let $S$ be the set of all positive integers $n$ such that $n^2$ can be expressed as the sum of three consecutive odd numbers. Find the sum of all elements in $S$ that are less than 100.", "answer": "120"}
+{"question": "A circle passes through the points $(2, 3)$ and $(4, 5)$. The center of the circle lies on the line $y = x + 1$. Find the radius of the circle.", "answer": "2"}
+{"question": "Find the number of ordered pairs $(a, b)$ of positive integers such that $a + b = 1000$ and neither $a$ nor $b$ has a zero digit.", "answer": "738"}
+{"question": "In triangle $ABC$, $AB = 13$, $BC = 14$, and $CA = 15$. The incircle of triangle $ABC$ touches side $BC$ at point $X$. Find $BX$.", "answer": "6"}
