@@ -88,7 +88,7 @@ def extract_answer(text: str, format_type: str = "aime") -> str:
     return text[:100] if len(text) > 100 else text
 
 
-
+def parse_args():
     parser = argparse.ArgumentParser(description="Evaluate SFT model")
     parser.add_argument(
         "--base_model",
