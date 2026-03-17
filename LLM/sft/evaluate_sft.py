@@ -24,18 +24,19 @@ warnings.filterwarnings("ignore")
 
 
 def extract_answer(text: str, format_type: str = "aime") -> str:
-    """Extract answer from LLM output.
+    """Extract answer from LLM output, handling truncation gracefully.
 
     For AIME format:
     - Extracts the final integer answer (0-999)
     - Tries multiple strategies: XML tags, pattern matching, last number
+    - Handles partially truncated outputs
 
     Args:
         text: Full LLM output including reasoning
         format_type: "aime" for math problems, "sft" for general text
 
     Returns:
-        Extracted answer string
+        Extracted answer string (empty if cannot extract)
     """
     if not text or not isinstance(text, str):
         return ""
@@ -48,7 +49,7 @@ def extract_answer(text: str, format_type: str = "aime") -> str:
         if answer_match:
             return answer_match.group(1)
 
-        # Strategy 2: Look for explicit answer indicators
+        # Strategy 2: Look for explicit answer indicators (before any truncation)
         patterns = [
             r'[Tt]he\s+(?:answer|sum|result|bases?)\s+(?:is|are)?\s*:?\s*(\d+)',
             r'[Ff]inal\s+answer\s*:?\s*(\d+)',
@@ -72,8 +73,8 @@ def extract_answer(text: str, format_type: str = "aime") -> str:
                 else:
                     return matches[-1]  # Return last match
 
-        # Strategy 3: Extract all numbers and use heuristics
-        # Find all numbers in the output
+        # Strategy 3: Look for numbers that appear to be final answers
+        # These are numbers that appear near the end or are explicitly stated
         all_numbers = re.findall(r'\b(\d+)\b', text)
 
         if all_numbers:
@@ -81,8 +82,16 @@ def extract_answer(text: str, format_type: str = "aime") -> str:
             valid_answers = [int(n) for n in all_numbers if int(n) <= 999]
 
             if valid_answers:
-                # Prefer the last occurrence or the largest (usually the final answer)
+                # Prefer the last occurrence (usually the final answer)
                 return str(valid_answers[-1])
+
+        # Strategy 4: For truncated outputs, look for incomplete number patterns
+        # e.g., "= 6" or "is 7" at the very end
+        incomplete_match = re.search(r'(?:=|is)\s*(\d+)\s*$', text)
+        if incomplete_match:
+            candidate = int(incomplete_match.group(1))
+            if 0 <= candidate <= 999:
+                return str(candidate)
 
     # Fallback: return original text (truncated)
     return text[:100] if len(text) > 100 else text
@@ -123,8 +132,8 @@ def parse_args():
     parser.add_argument(
         "--max_new_tokens",
         type=int,
-        default=512,
-        help="Maximum tokens to generate",
+        default=2048,
+        help="Maximum tokens to generate (default: 2048 for math reasoning)",
     )
     parser.add_argument(
         "--local_only",
@@ -199,9 +208,15 @@ def load_test_data(data_path: str, max_samples: Optional[int] = None) -> tuple:
 
 
 def generate_response(
-    model, tokenizer, input_text: str, max_new_tokens: int = 512, device: str = "cuda"
-) -> str:
-    """Generate response from model."""
+    model, tokenizer, input_text: str, max_new_tokens: int = 2048, device: str = "cuda"
+) -> tuple:
+    """Generate response from model.
+
+    Returns:
+        (response_text, was_truncated)
+            - response_text: Generated text
+            - was_truncated: True if output likely hit max_new_tokens limit
+    """
     messages = [{"role": "user", "content": input_text}]
     prompt = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True
@@ -217,15 +232,28 @@ def generate_response(
             do_sample=True,
             top_p=0.9,
             pad_token_id=tokenizer.eos_token_id,
+            return_dict_in_generate=True,
+            output_scores=False,
         )
 
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    response = tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
 
     # Extract assistant response (remove prompt)
     if "assistant" in response:
         response = response.split("assistant")[-1].strip()
 
-    return response
+    # Detect if output was truncated
+    # Check if output ends with incomplete sentence or abruptly
+    truncation_indicators = [
+        len(outputs.sequences[0]) >= max_new_tokens - 5,  # Hit token limit
+        response.endswith("..."),
+        response.endswith("- "),
+        response.endswith(","),
+        (response.count("(") > response.count(")")),  # Unmatched parentheses
+    ]
+    was_truncated = any(truncation_indicators)
+
+    return response, was_truncated
 
 
 def compute_metrics(
@@ -486,8 +514,9 @@ def main():
     base_outputs = []
     finetuned_outputs = []
     references = []
+    truncation_log = []  # Track truncated outputs
 
-    for sample in tqdm(test_data, desc="Evaluating"):
+    for sample_idx, sample in enumerate(tqdm(test_data, desc="Evaluating"), 1):
         if data_format == "aime":
             # AIME2025 format: question -> answer
             input_text = sample.get("question", "")
@@ -497,14 +526,14 @@ def main():
             input_text = sample.get("input", "")
             reference = sample.get("output", "")
 
-        base_out = generate_response(
+        base_out, base_truncated = generate_response(
             base_model,
             tokenizer,
             input_text,
             max_new_tokens=args.max_new_tokens,
             device=args.device,
         )
-        ft_out = generate_response(
+        ft_out, ft_truncated = generate_response(
             finetuned_model,
             tokenizer,
             input_text,
@@ -515,6 +544,15 @@ def main():
         base_outputs.append(base_out)
         finetuned_outputs.append(ft_out)
         references.append(reference)
+
+        # Log truncations
+        if base_truncated or ft_truncated:
+            truncation_log.append({
+                "sample_id": sample_idx,
+                "base_truncated": base_truncated,
+                "ft_truncated": ft_truncated,
+                "question": input_text[:100] + "..." if len(input_text) > 100 else input_text,
+            })
 
     # Extract answers for AIME format
     if data_format == "aime":
@@ -556,6 +594,9 @@ def main():
     for i, (sample, base_out, ft_out, ref) in enumerate(
         zip(test_data, base_outputs, finetuned_outputs, references), 1
     ):
+        # Check if this sample was truncated
+        is_truncated = any(log["sample_id"] == i for log in truncation_log)
+
         if data_format == "aime":
             base_answer = base_answers[i - 1] if i <= len(base_answers) else ""
             ft_answer = finetuned_answers[i - 1] if i <= len(finetuned_answers) else ""
@@ -567,9 +608,11 @@ def main():
                 "base_model_full_output": base_out,
                 "base_model_extracted_answer": base_answer,
                 "base_model_correct": base_answer == ref,
+                "base_model_output_truncated": any(log.get("base_truncated", False) for log in truncation_log if log["sample_id"] == i),
                 "finetuned_model_full_output": ft_out,
                 "finetuned_model_extracted_answer": ft_answer,
                 "finetuned_model_correct": ft_answer == ref,
+                "finetuned_model_output_truncated": any(log.get("ft_truncated", False) for log in truncation_log if log["sample_id"] == i),
             }
         else:
             result = {
@@ -578,6 +621,7 @@ def main():
                 "reference_output": ref,
                 "base_model_output": base_out,
                 "finetuned_model_output": ft_out,
+                "output_truncated": is_truncated,
             }
         detailed_results.append(result)
 
@@ -592,7 +636,33 @@ def main():
     print(f"Total samples evaluated: {len(test_data)}")
     print(f"\nMetrics:")
     print(json.dumps(metrics, indent=2, ensure_ascii=False))
+
+    # Print truncation summary
+    if truncation_log:
+        print(f"\n⚠️  Truncation Report ({len(truncation_log)} samples affected):")
+        print("-" * 60)
+        for log_entry in truncation_log:
+            sample_id = log_entry["sample_id"]
+            base_trunc = "✓" if log_entry["base_truncated"] else " "
+            ft_trunc = "✓" if log_entry["ft_truncated"] else " "
+            q_preview = log_entry["question"]
+            print(f"Sample {sample_id:3d} | Base [{base_trunc}] FT [{ft_trunc}] | {q_preview}")
+        print(
+            "\n💡 Tip: If outputs were truncated, try increasing --max_new_tokens"
+            f"\n         Current setting: {args.max_new_tokens} tokens"
+            "\n         Recommended for math: 2048-4096 tokens"
+        )
+    else:
+        print("\n✓ No truncations detected")
+
     print(f"\nResults saved to: {args.output_dir}")
+
+    # Save truncation log
+    if truncation_log:
+        truncation_path = os.path.join(args.output_dir, "truncation_log.json")
+        with open(truncation_path, "w", encoding="utf-8") as f:
+            json.dump(truncation_log, f, indent=2, ensure_ascii=False)
+        print(f"Truncation log saved to: {truncation_path}")
 
 
 if __name__ == "__main__":

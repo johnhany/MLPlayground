@@ -122,15 +122,40 @@ head -100 train_data.jsonl > test_data.jsonl
 # 安装评估依赖
 pip install sacrebleu rouge-score
 
-# 运行评估脚本（自动检测数据格式）
+# 基础用法（默认 max_new_tokens=2048 用于复杂推理）
 python evaluate_sft.py \
   --base_model /home/john/models/qwen3-4b \
   --adapter_path ./qwen3_sft_output/final_adapter \
   --test_data test_data.jsonl \
   --output_dir ./evaluation_results \
-  --max_samples 50 \
+  --local_only
+
+# AIME 格式（自动检测，需要更长的推理过程）
+python evaluate_sft.py \
+  --base_model /home/john/models/qwen3-4b \
+  --adapter_path ./qwen3_sft_output/final_adapter \
+  --test_data aime_test_data.jsonl \
+  --output_dir ./evaluation_results \
+  --local_only
+
+# 如果遇到输出被截断（⚠️  Truncation Report），增加 max_new_tokens
+python evaluate_sft.py \
+  --base_model /home/john/models/qwen3-4b \
+  --adapter_path ./qwen3_sft_output/final_adapter \
+  --test_data aime_test_data.jsonl \
+  --output_dir ./evaluation_results \
+  --max_new_tokens 4096 \
   --local_only
 ```
+
+**参数说明**：
+- `--max_new_tokens`: 最大生成长度（默认 2048，AIME 推荐 2048-4096）
+- `--max_samples`: 限制评估样本数（用于调试）
+
+**输出被截断的处理**：
+1. 脚本会自动检测并生成 `truncation_log.json`
+2. 查看日志：`cat evaluation_results/truncation_log.json`
+3. 重新运行时增加 `--max_new_tokens`（推荐值：4096）
 
 ### 查看评估结果
 
@@ -152,19 +177,26 @@ cat evaluation_results/detailed_results.json
 
 | 文件 | 说明 |
 |------|------|
-| `comparison.html` | 并排对比两个模型的输出（HTML 表格） |
+| `comparison.html` | 并排对比两个模型的输出（HTML 表格，包含答案对错标记） |
 | `comparison.md` | 并排对比两个模型的输出（Markdown） |
-| `metrics.json` | BLEU、ROUGE-L 等自动指标 |
-| `detailed_results.json` | 每条样本的详细结果 |
+| `metrics.json` | BLEU、ROUGE-L 等自动指标；AIME 格式为精确匹配率 |
+| `detailed_results.json` | 每条样本的详细结果（含提取的答案和对错判断） |
+| `truncation_log.json` | 输出被截断的样本列表（如果有截断） |
 | `summary.txt` | 评估总结 |
 
 ### 指标解读
 
+#### 对于 AIME 格式
+| 指标 | 说明 | 示例 |
+|------|------|------|
+| **exact_match** | 精确匹配率 | "75.0% (3/4)" 表示 4 题中 3 题正确 |
+| **improvement** | 微调对比 | "+25.0%" 表示提升 25% |
+
+#### 对于 SFT 格式
 | 指标 | 说明 | 预期改进 |
 |------|------|---------|
 | **BLEU-4** | 机器翻译评估指标，0-100 | +20~40 |
 | **ROUGE-L** | 文本摘要评估指标，0-1 | +0.1~0.3 |
-| **Perplexity** | 困惑度，越低越好 | -20~50% |
 
 **正常情况**：微调后模型的所有指标都应显著优于 base model。
 
