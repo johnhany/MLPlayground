@@ -5,11 +5,13 @@ Generates:
 - HTML/Markdown comparison reports (side-by-side outputs)
 - Automatic metrics (BLEU, ROUGE-L, Perplexity)
 - Detailed JSON results for further analysis
+- Answer extraction for math problems (AIME format)
 """
 
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from typing import Optional, Dict, List
 import warnings
@@ -21,7 +23,72 @@ from tqdm import tqdm
 warnings.filterwarnings("ignore")
 
 
-def parse_args():
+def extract_answer(text: str, format_type: str = "aime") -> str:
+    """Extract answer from LLM output.
+
+    For AIME format:
+    - Extracts the final integer answer (0-999)
+    - Tries multiple strategies: XML tags, pattern matching, last number
+
+    Args:
+        text: Full LLM output including reasoning
+        format_type: "aime" for math problems, "sft" for general text
+
+    Returns:
+        Extracted answer string
+    """
+    if not text or not isinstance(text, str):
+        return ""
+
+    text = text.strip()
+
+    if format_type == "aime":
+        # Strategy 1: Look for <answer>...</answer> tags
+        answer_match = re.search(r'<answer>(\d+)</answer>', text)
+        if answer_match:
+            return answer_match.group(1)
+
+        # Strategy 2: Look for explicit answer indicators
+        patterns = [
+            r'[Tt]he\s+(?:answer|sum|result|bases?)\s+(?:is|are)?\s*:?\s*(\d+)',
+            r'[Ff]inal\s+answer\s*:?\s*(\d+)',
+            r'Therefore,?\s+(?:the\s+)?answer\s+is\s+(\d+)',
+            r'[Tt]hus\s+(?:the\s+)?(?:answer|sum)\s+(?:is|of|are)\s+(\d+)',
+            r'(?:answer|sum)\s*=\s*(\d+)',
+            r'b\s*=\s*(\d+)\s+(?:and|or)\s+(\d+)',  # For finding bases
+        ]
+
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            if matches:
+                # For patterns that return tuples (like bases), join them
+                if isinstance(matches[0], tuple):
+                    nums = [str(m) for m in matches[0] if m]
+                    if len(nums) > 1:
+                        # Sum the bases
+                        return str(sum(int(n) for n in nums))
+                    elif nums:
+                        return nums[0]
+                else:
+                    return matches[-1]  # Return last match
+
+        # Strategy 3: Extract all numbers and use heuristics
+        # Find all numbers in the output
+        all_numbers = re.findall(r'\b(\d+)\b', text)
+
+        if all_numbers:
+            # Convert to integers and filter for reasonable AIME answers (0-999)
+            valid_answers = [int(n) for n in all_numbers if int(n) <= 999]
+
+            if valid_answers:
+                # Prefer the last occurrence or the largest (usually the final answer)
+                return str(valid_answers[-1])
+
+    # Fallback: return original text (truncated)
+    return text[:100] if len(text) > 100 else text
+
+
+
     parser = argparse.ArgumentParser(description="Evaluate SFT model")
     parser.add_argument(
         "--base_model",
@@ -165,8 +232,13 @@ def compute_metrics(
     base_outputs: List[str],
     finetuned_outputs: List[str],
     references: List[str],
+    data_format: str = "sft",
 ) -> Dict:
-    """Compute BLEU, ROUGE-L, and other metrics."""
+    """Compute BLEU, ROUGE-L, and other metrics.
+
+    For AIME format: also compute exact match accuracy.
+    For SFT format: compute BLEU and ROUGE-L.
+    """
     try:
         from sacrebleu import corpus_bleu
     except ImportError:
@@ -185,6 +257,22 @@ def compute_metrics(
         "improvement": {},
     }
 
+    # For AIME format: compute exact match accuracy
+    if data_format == "aime":
+        base_correct = sum(1 for pred, ref in zip(base_outputs, references) if str(pred).strip() == str(ref).strip())
+        ft_correct = sum(1 for pred, ref in zip(finetuned_outputs, references) if str(pred).strip() == str(ref).strip())
+        total = len(references)
+
+        base_accuracy = (base_correct / total * 100) if total > 0 else 0
+        ft_accuracy = (ft_correct / total * 100) if total > 0 else 0
+
+        metrics["base_model"]["exact_match"] = f"{base_accuracy:.1f}% ({base_correct}/{total})"
+        metrics["finetuned_model"]["exact_match"] = f"{ft_accuracy:.1f}% ({ft_correct}/{total})"
+        metrics["improvement"]["exact_match"] = f"+{(ft_accuracy - base_accuracy):.1f}%"
+
+        return metrics
+
+    # For SFT format: compute BLEU and ROUGE-L
     # BLEU
     if corpus_bleu:
         try:
@@ -225,8 +313,14 @@ def generate_html_report(
     finetuned_outputs: List[str],
     output_path: str,
     data_format: str = "sft",
+    base_answers: Optional[List[str]] = None,
+    finetuned_answers: Optional[List[str]] = None,
 ):
-    """Generate HTML comparison report. Supports SFT and AIME formats."""
+    """Generate HTML comparison report. Supports SFT and AIME formats.
+
+    For AIME: displays extracted answers and correctness indicators.
+    For SFT: displays full model outputs.
+    """
     col_header = "Question" if data_format == "aime" else "Input"
 
     html = f"""
@@ -268,11 +362,27 @@ def generate_html_report(
         if data_format == "aime":
             input_text = sample.get("question", "")
             reference = sample.get("answer", "")
+            # Use extracted answers if available
+            base_answer = base_answers[i - 1] if base_answers and i <= len(base_answers) else base_out
+            ft_answer = finetuned_answers[i - 1] if finetuned_answers and i <= len(finetuned_answers) else ft_out
+
+            # Add correctness indicator
+            base_correct = "✓" if base_answer == reference else "✗"
+            ft_correct = "✓" if ft_answer == reference else "✗"
+
+            html += f"""
+            <tr>
+                <td class="sample-num">{i}</td>
+                <td>{input_text}</td>
+                <td>{reference}</td>
+                <td class="base">{base_answer} {base_correct}</td>
+                <td class="finetuned">{ft_answer} {ft_correct}</td>
+            </tr>
+        """
         else:
             input_text = sample.get("input", "")
             reference = sample.get("output", "")
-
-        html += f"""
+            html += f"""
             <tr>
                 <td class="sample-num">{i}</td>
                 <td>{input_text}</td>
@@ -300,8 +410,14 @@ def generate_markdown_report(
     finetuned_outputs: List[str],
     output_path: str,
     data_format: str = "sft",
+    base_answers: Optional[List[str]] = None,
+    finetuned_answers: Optional[List[str]] = None,
 ):
-    """Generate Markdown comparison report. Supports SFT and AIME formats."""
+    """Generate Markdown comparison report. Supports SFT and AIME formats.
+
+    For AIME: displays extracted answers and correctness indicators.
+    For SFT: displays full model outputs.
+    """
     md = "# SFT Model Evaluation Report\n\n"
     md += "Comparing Base Model vs Fine-tuned Model\n\n"
     md += f"**Format**: {data_format.upper()}\n\n"
@@ -312,18 +428,28 @@ def generate_markdown_report(
         if data_format == "aime":
             input_text = sample.get("question", "")
             reference = sample.get("answer", "")
+            # Use extracted answers if available
+            base_answer = base_answers[i - 1] if base_answers and i <= len(base_answers) else base_out
+            ft_answer = finetuned_answers[i - 1] if finetuned_answers and i <= len(finetuned_answers) else ft_out
+
+            # Add correctness indicator
+            base_correct = "✓ CORRECT" if base_answer == reference else "✗ INCORRECT"
+            ft_correct = "✓ CORRECT" if ft_answer == reference else "✗ INCORRECT"
+
             md += f"## Sample {i}\n\n"
             md += f"**Question**: {input_text}\n\n"
             md += f"**Reference Answer**: {reference}\n\n"
+            md += f"**Base Model Answer**: {base_answer} ({base_correct})\n\n"
+            md += f"**Fine-tuned Model Answer**: {ft_answer} ({ft_correct})\n\n"
         else:
             input_text = sample.get("input", "")
             reference = sample.get("output", "")
             md += f"## Sample {i}\n\n"
             md += f"**Input**: {input_text}\n\n"
             md += f"**Reference Output**: {reference}\n\n"
+            md += f"**Base Model Output**:\n> {base_out}\n\n"
+            md += f"**Fine-tuned Model Output**:\n> {ft_out}\n\n"
 
-        md += f"**Base Model Output**:\n> {base_out}\n\n"
-        md += f"**Fine-tuned Model Output**:\n> {ft_out}\n\n"
         md += "---\n\n"
 
     with open(output_path, "w", encoding="utf-8") as f:
@@ -390,11 +516,22 @@ def main():
         finetuned_outputs.append(ft_out)
         references.append(reference)
 
+    # Extract answers for AIME format
+    if data_format == "aime":
+        print("\n" + "=" * 60)
+        print("Extracting Answers from LLM Output")
+        print("=" * 60)
+        base_answers = [extract_answer(out, "aime") for out in tqdm(base_outputs, desc="Base model")]
+        finetuned_answers = [extract_answer(out, "aime") for out in tqdm(finetuned_outputs, desc="Fine-tuned model")]
+    else:
+        base_answers = base_outputs
+        finetuned_answers = finetuned_outputs
+
     # Compute metrics
     print("\n" + "=" * 60)
     print("Computing Metrics")
     print("=" * 60)
-    metrics = compute_metrics(base_outputs, finetuned_outputs, references)
+    metrics = compute_metrics(base_answers, finetuned_answers, references, data_format)
 
     # Generate reports
     print("\n" + "=" * 60)
@@ -406,8 +543,8 @@ def main():
     metrics_path = os.path.join(args.output_dir, "metrics.json")
     detailed_path = os.path.join(args.output_dir, "detailed_results.json")
 
-    generate_html_report(test_data, base_outputs, finetuned_outputs, html_path, data_format)
-    generate_markdown_report(test_data, base_outputs, finetuned_outputs, md_path, data_format)
+    generate_html_report(test_data, base_outputs, finetuned_outputs, html_path, data_format, base_answers, finetuned_answers)
+    generate_markdown_report(test_data, base_outputs, finetuned_outputs, md_path, data_format, base_answers, finetuned_answers)
 
     # Save metrics
     with open(metrics_path, "w", encoding="utf-8") as f:
@@ -420,12 +557,19 @@ def main():
         zip(test_data, base_outputs, finetuned_outputs, references), 1
     ):
         if data_format == "aime":
+            base_answer = base_answers[i - 1] if i <= len(base_answers) else ""
+            ft_answer = finetuned_answers[i - 1] if i <= len(finetuned_answers) else ""
+
             result = {
                 "sample_id": i,
                 "question": sample.get("question", ""),
                 "reference_answer": ref,
-                "base_model_answer": base_out,
-                "finetuned_model_answer": ft_out,
+                "base_model_full_output": base_out,
+                "base_model_extracted_answer": base_answer,
+                "base_model_correct": base_answer == ref,
+                "finetuned_model_full_output": ft_out,
+                "finetuned_model_extracted_answer": ft_answer,
+                "finetuned_model_correct": ft_answer == ref,
             }
         else:
             result = {
