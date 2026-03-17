@@ -227,41 +227,40 @@ def generate_html_report(
     data_format: str = "sft",
 ):
     """Generate HTML comparison report. Supports SFT and AIME formats."""
-    html = """
+    col_header = "Question" if data_format == "aime" else "Input"
+
+    html = f"""
     <html>
     <head>
         <meta charset="utf-8">
         <title>SFT Model Evaluation Report</title>
         <style>
-            body { font-family: Arial, sans-serif; margin: 20px; }
-            table { border-collapse: collapse; width: 100%; margin-bottom: 20px; }
-            th, td { border: 1px solid #ddd; padding: 12px; text-align: left; }
-            th { background-color: #4CAF50; color: white; }
-            tr:nth-child(even) { background-color: #f2f2f2; }
-            .base { background-color: #ffe6e6; }
-            .finetuned { background-color: #e6f3ff; }
-            h1 { color: #333; }
-            .sample-num { font-weight: bold; color: #666; }
-            .question { font-style: italic; color: #555; }
-            .answer { font-weight: bold; }
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            table {{ border-collapse: collapse; width: 100%; margin-bottom: 20px; }}
+            th, td {{ border: 1px solid #ddd; padding: 12px; text-align: left; }}
+            th {{ background-color: #4CAF50; color: white; }}
+            tr:nth-child(even) {{ background-color: #f2f2f2; }}
+            .base {{ background-color: #ffe6e6; }}
+            .finetuned {{ background-color: #e6f3ff; }}
+            h1 {{ color: #333; }}
+            .sample-num {{ font-weight: bold; color: #666; }}
+            .question {{ font-style: italic; color: #555; }}
+            .answer {{ font-weight: bold; }}
         </style>
     </head>
     <body>
         <h1>SFT Model Evaluation Report</h1>
         <p>Comparing Base Model vs Fine-tuned Model</p>
-        <p>Format: {}</p>
+        <p>Format: {data_format.upper()}</p>
         <table>
             <tr>
                 <th>#</th>
-                <th>{}</th>
+                <th>{col_header}</th>
                 <th>Reference</th>
                 <th class="base">Base Model</th>
                 <th class="finetuned">Fine-tuned Model</th>
             </tr>
-    """.format(
-        data_format.upper(),
-        "Question" if data_format == "aime" else "Input",
-    )
+    """
 
     for i, (sample, base_out, ft_out) in enumerate(
         zip(test_data, base_outputs, finetuned_outputs), 1
