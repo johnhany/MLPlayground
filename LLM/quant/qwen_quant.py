@@ -139,12 +139,25 @@ def quantize_awq(args):
     Output is saved in HuggingFace safetensors format and can be loaded by
     vLLM directly without --quantization flag (compressed-tensors format).
     """
+    # Compatibility shim: TORCH_INIT_FUNCTIONS was removed in transformers>=4.52.
+    # llm-compressor imports it at module level; an empty dict is safe here
+    # since no weight init is performed when loading pre-trained weights.
+    import importlib
+    _mu = importlib.import_module("transformers.modeling_utils")
+    if not hasattr(_mu, "TORCH_INIT_FUNCTIONS"):
+        setattr(_mu, "TORCH_INIT_FUNCTIONS", {})
+
     try:
         from llmcompressor import oneshot
         from llmcompressor.modifiers.quantization import QuantizationModifier
-    except ImportError:
-        print("[ERROR] llm-compressor not installed.")
-        print("  Run: pip install llmcompressor")
+    except ImportError as e:
+        if "TORCH_INIT_FUNCTIONS" in str(e):
+            print("[ERROR] llm-compressor is incompatible with the installed transformers version.")
+            print("  The TORCH_INIT_FUNCTIONS shim did not help. Try pinning transformers:")
+            print("  pip install 'transformers==4.51.3'")
+        else:
+            print("[ERROR] llm-compressor not installed.")
+            print("  Run: pip install llmcompressor")
         sys.exit(1)
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -160,12 +173,24 @@ def quantize_awq(args):
     print(f"[AWQ] Output: {output_path}")
 
     print("[AWQ] Loading model and tokenizer...")
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model,
-        device_map="auto",
-        torch_dtype="auto",
-        trust_remote_code=True,
-    )
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            args.model,
+            device_map="auto",
+            torch_dtype="auto",
+            trust_remote_code=True,
+        )
+    except ValueError as e:
+        if "does not recognize this architecture" in str(e) or "model_type" in str(e):
+            import json
+            cfg = json.loads((Path(args.model) / "config.json").read_text())
+            model_type = cfg.get("model_type", "unknown")
+            import transformers
+            print(f"\n[ERROR] transformers {transformers.__version__} does not support model_type='{model_type}'.")
+            print("  Fix: pip install --upgrade transformers")
+            print("  Or:  pip install git+https://github.com/huggingface/transformers.git")
+            sys.exit(1)
+        raise
     tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
     recipe = QuantizationModifier(
@@ -273,6 +298,23 @@ def main():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_mem = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         print(f"[INFO] GPU: {gpu_name} ({gpu_mem:.1f} GB)")
+
+    # Check transformers supports this model's architecture
+    model_path = Path(args.model)
+    if model_path.exists():
+        import json
+        import transformers
+        from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+        config_file = model_path / "config.json"
+        if config_file.exists():
+            cfg = json.loads(config_file.read_text())
+            model_type = cfg.get("model_type", "")
+            if model_type and model_type not in CONFIG_MAPPING:
+                print(f"\n[WARN] transformers {transformers.__version__} does not natively support model_type='{model_type}'.")
+                print("[WARN] This may cause loading errors. If so, upgrade transformers:")
+                print("       pip install --upgrade transformers")
+                print("       pip install git+https://github.com/huggingface/transformers.git")
+                print("[WARN] Continuing anyway (trust_remote_code=True may still work)...\n")
 
     Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
