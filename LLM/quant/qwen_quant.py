@@ -127,87 +127,81 @@ def load_model_and_tokenizer(args):
     return model, tokenizer
 
 
-# ==================== AWQ Quantization ====================
+# ==================== AWQ Quantization (via llm-compressor) ====================
 
 
 def quantize_awq(args):
     """
-    AWQ 4-bit quantization using autoawq.
-    AWQ requires loading the model independently (not via Unsloth's wrapper),
-    so we use AutoAWQForCausalLM directly on the model path.
-    Tokenizer is loaded after the model to reuse the properly parsed config object,
-    working around a transformers bug where AutoConfig returns a raw dict for
-    custom architectures.
+    W4A16 group-wise 4-bit quantization using llm-compressor (vLLM project).
+    autoawq is officially deprecated; llm-compressor is the vLLM-recommended
+    successor for producing AWQ-compatible models.
+
+    Output is saved in HuggingFace safetensors format and can be loaded by
+    vLLM directly without --quantization flag (compressed-tensors format).
     """
     try:
-        from awq import AutoAWQForCausalLM
+        from llmcompressor import oneshot
+        from llmcompressor.modifiers.quantization import QuantizationModifier
     except ImportError:
-        print("[ERROR] autoawq not installed. Run: pip install autoawq")
+        print("[ERROR] llm-compressor not installed.")
+        print("  Run: pip install llmcompressor")
         sys.exit(1)
-    from transformers import AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
     output_path = Path(args.output_dir) / "awq"
     output_path.mkdir(parents=True, exist_ok=True)
 
-    quant_config = {
-        "zero_point": True,
-        "q_group_size": args.awq_group_sz,
-        "w_bit": args.awq_bits,
-        "version": "GEMM",
-    }
-
-    print(f"\n[AWQ] Starting 4-bit AWQ quantization")
-    print(f"[AWQ] Config: {quant_config}")
+    # W4A16 with group quantization — equivalent to AWQ scheme
+    # group_size=128 is the AWQ standard; matches --awq_group_sz
+    scheme = f"W{args.awq_bits}A16"
+    print(f"\n[AWQ] Starting {scheme} quantization via llm-compressor")
+    print(f"[AWQ] Group size: {args.awq_group_sz}")
     print(f"[AWQ] Calibration samples: {args.calib_samples}")
     print(f"[AWQ] Output: {output_path}")
 
-    # Load model via AutoAWQ (uses transformers under the hood)
-    print("[AWQ] Loading model for calibration...")
-    awq_model = AutoAWQForCausalLM.from_pretrained(
+    print("[AWQ] Loading model and tokenizer...")
+    model = AutoModelForCausalLM.from_pretrained(
         args.model,
-        safetensors=True,
         device_map="auto",
+        torch_dtype="auto",
         trust_remote_code=True,
     )
+    tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
-    # Load tokenizer using awq_model.config (a proper PretrainedConfig object),
-    # bypassing the transformers bug that returns a raw dict for custom archs.
-    print("[AWQ] Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model,
-        config=awq_model.config,
-        trust_remote_code=True,
+    recipe = QuantizationModifier(
+        targets="Linear",
+        scheme=scheme,
+        ignore=["lm_head"],
+        args={"group_size": args.awq_group_sz},
     )
 
-    # Run AWQ quantization with calibration
     print("[AWQ] Running quantization (this may take 10-30 minutes)...")
     t0 = time.time()
-    awq_model.quantize(
-        tokenizer,
-        quant_config=quant_config,
-        calib_data="wikitext",
+    oneshot(
+        model=model,
+        recipe=recipe,
+        dataset="wikitext",
+        dataset_config_name="wikitext-2-raw-v1",
         split="train",
-        text_column="text",
-        n_samples=args.calib_samples,
-        max_seq_len=args.max_seq_len,
+        text_field="text",
+        max_seq_length=args.max_seq_len,
+        num_calibration_samples=args.calib_samples,
     )
     elapsed = time.time() - t0
     print(f"[AWQ] Quantization done in {elapsed:.1f}s")
 
-    # Save quantized model
     print(f"[AWQ] Saving to {output_path}...")
-    awq_model.save_quantized(str(output_path))
+    model.save_pretrained(str(output_path))
     tokenizer.save_pretrained(str(output_path))
 
-    # Print model size
-    gguf_files = list(output_path.glob("*.safetensors"))
-    if gguf_files:
-        total_size = sum(f.stat().st_size for f in gguf_files) / (1024 ** 3)
+    safetensors = list(output_path.glob("*.safetensors"))
+    if safetensors:
+        total_size = sum(f.stat().st_size for f in safetensors) / (1024 ** 3)
         print(f"[AWQ] Model size: {total_size:.2f} GB")
 
     print(f"\n[AWQ] Done! Quantized model saved to: {output_path}")
-    print(f"[AWQ] Load with vLLM:")
-    print(f"      vllm serve {output_path} --quantization awq --dtype half")
+    print(f"[AWQ] Load with vLLM (compressed-tensors format, no extra flag needed):")
+    print(f"      vllm serve {output_path}")
 
     return str(output_path)
 
