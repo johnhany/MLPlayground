@@ -145,12 +145,11 @@ def download_calib_data(save_dir: str):
     """Download wikitext-2 to a local directory for offline use."""
     from datasets import load_dataset
 
-    # Point HF cache to save_dir so wikitext lands there, not in ~/.cache
-    os.environ["HF_DATASETS_CACHE"] = str(Path(save_dir).resolve())
     Path(save_dir).mkdir(parents=True, exist_ok=True)
     print(f"[CALIB] Downloading wikitext-2-raw-v1 → {save_dir} ...")
     from datasets import load_dataset  # type: ignore[import]
-    load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")
+    # Use cache_dir= directly — env var may be ignored if datasets was already imported
+    load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1", cache_dir=save_dir)
     total = sum(f.stat().st_size for f in Path(save_dir).rglob("*") if f.is_file()) / (1024 ** 2)
     print(f"[CALIB] Done ({total:.1f} MB). Use with: --calib_data_dir {save_dir}")
 
@@ -228,11 +227,12 @@ def quantize_awq(args):
     print("[AWQ] Running quantization (this may take 10-30 minutes)...")
     t0 = time.time()
 
-    # If a local calib cache dir is given, point HF there before offline lock-down.
-    # HF_DATASETS_OFFLINE=1 (set earlier) will then read from this cache
-    # without touching the internet — same API call, no unsupported parameters.
+    # If a local calib cache dir is given, redirect the datasets cache at runtime.
+    # We patch datasets.config directly because env vars may be ignored if the
+    # datasets module was already imported (e.g. by llm-compressor).
     if args.calib_data_dir:
-        os.environ["HF_DATASETS_CACHE"] = str(Path(args.calib_data_dir).resolve())
+        import datasets.config as _ds_cfg  # type: ignore[import]
+        _ds_cfg.HF_DATASETS_CACHE = Path(args.calib_data_dir).resolve()
         print(f"[AWQ] Calibration dataset cache: {args.calib_data_dir}")
     elif args.local_only:
         print("[AWQ] WARN: --local_only set but no --calib_data_dir provided.")
