@@ -163,6 +163,7 @@ def quantize_awq(args, tokenizer):
         args.model,
         safetensors=True,
         device_map="auto",
+        trust_remote_code=True,
     )
 
     # Run AWQ quantization with calibration
@@ -283,7 +284,7 @@ def main():
         # Load tokenizer only via Unsloth for validation
         from transformers import AutoTokenizer
         print(f"[INFO] Loading tokenizer from: {args.model}")
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
 
         quantize_awq(args, tokenizer)
 
