@@ -145,64 +145,15 @@ def download_calib_data(save_dir: str):
     """Download wikitext-2 to a local directory for offline use."""
     from datasets import load_dataset
 
-    save_path = Path(save_dir)
-    save_path.mkdir(parents=True, exist_ok=True)
-    print(f"[CALIB] Downloading wikitext-2-raw-v1 → {save_path} ...")
-    ds = load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")
-    ds.save_to_disk(str(save_path))
-    total = sum(f.stat().st_size for f in save_path.rglob("*") if f.is_file()) / (1024 ** 2)
-    print(f"[CALIB] Saved ({total:.1f} MB). Use with: --calib_data_dir {save_path}")
+    # Point HF cache to save_dir so wikitext lands there, not in ~/.cache
+    os.environ["HF_DATASETS_CACHE"] = str(Path(save_dir).resolve())
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    print(f"[CALIB] Downloading wikitext-2-raw-v1 → {save_dir} ...")
+    from datasets import load_dataset  # type: ignore[import]
+    load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1")
+    total = sum(f.stat().st_size for f in Path(save_dir).rglob("*") if f.is_file()) / (1024 ** 2)
+    print(f"[CALIB] Done ({total:.1f} MB). Use with: --calib_data_dir {save_dir}")
 
-
-def make_calib_dataloader(tokenizer, num_samples: int, max_seq_len: int, calib_data_dir: str | None = None):
-    """Build a calibration DataLoader.
-
-    Priority:
-      1. Local disk dataset saved via --download_calib_data  (best quality)
-      2. Hardcoded diverse texts                             (offline fallback)
-    """
-    import torch
-    from torch.utils.data import DataLoader, TensorDataset
-
-    if calib_data_dir and Path(calib_data_dir).exists():
-        from datasets import load_from_disk  # type: ignore[import]
-        print(f"[AWQ] Loading calibration data from disk: {calib_data_dir}")
-        ds = load_from_disk(calib_data_dir)
-        # load_from_disk returns a DatasetDict; pick the train split
-        if hasattr(ds, "keys"):
-            ds = ds["train"]  # type: ignore[index]
-        texts = [row["text"] for row in ds.select(range(min(num_samples, len(ds))))]  # type: ignore[union-attr]
-    else:
-        print("[AWQ] No local calib dataset found; using built-in synthetic texts.")
-        print("[AWQ] Tip: run with --download_calib_data --calib_data_dir <path> first for better quality.")
-        texts = [
-            "The quick brown fox jumps over the lazy dog.",
-            "Machine learning enables computers to learn from data without explicit programming.",
-            "Large language models demonstrate remarkable capabilities across diverse tasks.",
-            "The capital of France is Paris, which is known for the Eiffel Tower.",
-            "def fibonacci(n):\n    if n <= 1:\n        return n\n    return fibonacci(n-1) + fibonacci(n-2)",
-            "Quantum computing leverages quantum mechanical phenomena to process information.",
-            "The human genome contains approximately 3 billion base pairs of DNA.",
-            "To be or not to be, that is the question that Hamlet poses in the famous soliloquy.",
-            "Water is composed of two hydrogen atoms and one oxygen atom, forming the molecule H2O.",
-            "The stock market experienced significant volatility during the global economic crisis.",
-            "人工智能正在改变我们的生活方式，深度学习是其中的核心技术之一。",
-            "import torch\nimport transformers\nfrom pathlib import Path\n\nmodel = AutoModelForCausalLM.from_pretrained",
-        ]
-
-    texts = (texts * ((num_samples // len(texts)) + 1))[:num_samples]
-    tokenized = tokenizer(
-        texts,
-        return_tensors="pt",
-        padding="max_length",
-        truncation=True,
-        max_length=max_seq_len,
-    )
-    dataset = TensorDataset(
-        tokenized["input_ids"].to(torch.long),
-        tokenized["attention_mask"].to(torch.long),
-    )
-    return DataLoader(dataset, batch_size=1)
 
 
 def quantize_awq(args):
@@ -276,21 +227,27 @@ def quantize_awq(args):
 
     print("[AWQ] Running quantization (this may take 10-30 minutes)...")
     t0 = time.time()
-    if args.local_only:
-        calib_loader = make_calib_dataloader(
-            tokenizer, args.calib_samples, args.max_seq_len,
-            calib_data_dir=args.calib_data_dir,
-        )
-        oneshot(model=model, recipe=recipe, dataloader=calib_loader)
-    else:
-        oneshot(
-            model=model,
-            recipe=recipe,
-            dataset="wikitext",
-            dataset_config_name="wikitext-2-raw-v1",
-            max_seq_length=args.max_seq_len,
-            num_calibration_samples=args.calib_samples,
-        )
+
+    # If a local calib cache dir is given, point HF there before offline lock-down.
+    # HF_DATASETS_OFFLINE=1 (set earlier) will then read from this cache
+    # without touching the internet — same API call, no unsupported parameters.
+    if args.calib_data_dir:
+        os.environ["HF_DATASETS_CACHE"] = str(Path(args.calib_data_dir).resolve())
+        print(f"[AWQ] Calibration dataset cache: {args.calib_data_dir}")
+    elif args.local_only:
+        print("[AWQ] WARN: --local_only set but no --calib_data_dir provided.")
+        print("[AWQ]       Pre-download first:  python qwen_quant.py "
+              "--download_calib_data --calib_data_dir ./calib_data")
+        sys.exit(1)
+
+    oneshot(
+        model=model,
+        recipe=recipe,
+        dataset="wikitext",
+        dataset_config_name="wikitext-2-raw-v1",
+        max_seq_length=args.max_seq_len,
+        num_calibration_samples=args.calib_samples,
+    )
     elapsed = time.time() - t0
     print(f"[AWQ] Quantization done in {elapsed:.1f}s")
 
