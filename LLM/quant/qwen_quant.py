@@ -130,17 +130,21 @@ def load_model_and_tokenizer(args):
 # ==================== AWQ Quantization ====================
 
 
-def quantize_awq(args, tokenizer):
+def quantize_awq(args):
     """
     AWQ 4-bit quantization using autoawq.
     AWQ requires loading the model independently (not via Unsloth's wrapper),
     so we use AutoAWQForCausalLM directly on the model path.
+    Tokenizer is loaded after the model to reuse the properly parsed config object,
+    working around a transformers bug where AutoConfig returns a raw dict for
+    custom architectures.
     """
     try:
         from awq import AutoAWQForCausalLM
     except ImportError:
         print("[ERROR] autoawq not installed. Run: pip install autoawq")
         sys.exit(1)
+    from transformers import AutoTokenizer
 
     output_path = Path(args.output_dir) / "awq"
     output_path.mkdir(parents=True, exist_ok=True)
@@ -163,6 +167,15 @@ def quantize_awq(args, tokenizer):
         args.model,
         safetensors=True,
         device_map="auto",
+        trust_remote_code=True,
+    )
+
+    # Load tokenizer using awq_model.config (a proper PretrainedConfig object),
+    # bypassing the transformers bug that returns a raw dict for custom archs.
+    print("[AWQ] Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model,
+        config=awq_model.config,
         trust_remote_code=True,
     )
 
@@ -281,12 +294,7 @@ def main():
                 print(f"[ERROR] Local model path not found: {args.model}")
                 sys.exit(1)
 
-        # Load tokenizer only via Unsloth for validation
-        from transformers import AutoTokenizer
-        print(f"[INFO] Loading tokenizer from: {args.model}")
-        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True)
-
-        quantize_awq(args, tokenizer)
+        quantize_awq(args)
 
     elif args.quant_format == "gguf":
         # GGUF: use Unsloth's native export
