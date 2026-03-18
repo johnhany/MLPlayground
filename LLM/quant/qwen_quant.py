@@ -197,7 +197,6 @@ def quantize_awq(args):
         targets="Linear",
         scheme=scheme,
         ignore=["lm_head"],
-        args={"group_size": args.awq_group_sz},
     )
 
     print("[AWQ] Running quantization (this may take 10-30 minutes)...")
