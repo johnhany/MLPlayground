@@ -206,8 +206,6 @@ def quantize_awq(args):
         recipe=recipe,
         dataset="wikitext",
         dataset_config_name="wikitext-2-raw-v1",
-        split="train",
-        text_field="text",
         max_seq_length=args.max_seq_len,
         num_calibration_samples=args.calib_samples,
     )
