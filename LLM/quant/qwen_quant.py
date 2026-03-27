@@ -31,7 +31,7 @@ def parse_args():
     parser.add_argument(
         "--model",
         type=str,
-        default="Qwen/Qwen2.5-7B",
+        default="Qwen/Qwen3.5-9B",
         help="HuggingFace model ID or local path",
     )
     parser.add_argument(
